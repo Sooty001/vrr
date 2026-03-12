@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>VOID RUNNER AR</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/aframe/1.4.2/aframe.min.js"></script>
+<!-- AR.js для A-Frame (GPS + камера) -->
+<script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;font-family:monospace;touch-action:none}
+
+/* ── HUD ── */
+#hud{
+  position:fixed;top:0;left:0;right:0;z-index:999;
+  display:flex;justify-content:space-between;align-items:flex-start;
+  padding:10px 14px;pointer-events:none;
+}
+.hp{
+  background:rgba(0,0,0,.75);border:1px solid #00e6ff;
+  border-radius:6px;padding:5px 12px;text-align:center;
+  box-shadow:0 0 10px rgba(0,230,255,.25);
+}
+.hl{font-size:8px;letter-spacing:2px;color:rgba(0,230,255,.5)}
+.hv{font-size:20px;font-weight:bold;color:#00e6ff;line-height:1.1}
+#ht .hv{color:#ff8c00} #hlv .hv{color:#ff3366}
+
+/* ── Прицел ── */
+#xhair{
+  position:fixed;top:50%;left:50%;
+  transform:translate(-50%,-50%);
+  width:60px;height:60px;z-index:999;pointer-events:none;
+  border:2px solid rgba(0,230,255,.6);border-radius:50%;
+  display:none;
+}
+#xhair::before,#xhair::after{
+  content:'';position:absolute;background:rgba(0,230,255,.8);
+}
+#xhair::before{width:1px;height:20px;left:50%;top:50%;transform:translate(-50%,-50%)}
+#xhair::after{height:1px;width:20px;top:50%;left:50%;transform:translate(-50%,-50%)}
+#xhair.hit{border-color:#ffdd00;}
+#xhair.hit::before,#xhair.hit::after{background:#ffdd00}
+
+/* ── Кнопка выстрела (большая, для пальца) ── */
+#shoot-btn{
+  position:fixed;bottom:30px;left:50%;transform:translateX(-50%);
+  z-index:999;
+  width:80px;height:80px;border-radius:50%;
+  background:rgba(0,230,255,.2);border:2px solid #00e6ff;
+  color:#00e6ff;font-size:28px;
+  display:none;align-items:center;justify-content:center;
+  cursor:pointer;-webkit-tap-highlight-color:transparent;
+  box-shadow:0 0 20px rgba(0,230,255,.4);
+  transition:all .1s;
+}
+#shoot-btn:active{background:rgba(0,230,255,.5);transform:translateX(-50%) scale(0.92)}
+
+/* ── Попап ── */
+#popup{
+  position:fixed;top:35%;left:50%;transform:translateX(-50%);
+  z-index:999;font-size:32px;font-weight:bold;
+  pointer-events:none;opacity:0;transition:opacity .1s;
+  text-shadow:0 0 12px currentColor;white-space:nowrap;
+}
+
+/* ── GPS статус ── */
+#gps-bar{
+  position:fixed;bottom:130px;left:50%;transform:translateX(-50%);
+  z-index:999;font-size:10px;letter-spacing:2px;
+  color:rgba(0,230,255,.5);background:rgba(0,0,0,.7);
+  border:1px solid rgba(0,230,255,.25);border-radius:4px;
+  padding:5px 14px;pointer-events:none;text-align:center;
+  white-space:nowrap;
+}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;
+     background:#ff3366;margin-right:5px;vertical-align:middle;
+     animation:blink 1s ease-in-out infinite}
+.dot.ok{background:#00ff88;animation:none}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+
+/* ── Радар ── */
+#radar{
+  position:fixed;bottom:130px;right:14px;z-index:999;
+  width:90px;height:90px;border-radius:50%;
+  border:1px solid rgba(0,230,255,.5);
+  background:rgba(0,0,0,.6);overflow:hidden;display:none;
+}
+
+/* ── Оверлей ── */
+#overlay{
+  position:fixed;inset:0;z-index:1000;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+  background:radial-gradient(ellipse at 50% 40%,rgba(0,8,30,.97),#000);
+  padding:20px;
+}
+.ot{font-size:clamp(28px,8vw,60px);font-weight:900;color:#00e6ff;
+    letter-spacing:4px;text-shadow:0 0 28px #00e6ff;animation:glow 2s ease-in-out infinite;
+    text-align:center}
+.os{font-size:10px;letter-spacing:4px;color:rgba(0,230,255,.35)}
+.oi{font-size:12px;line-height:2;text-align:center;color:rgba(255,255,255,.4);max-width:320px}
+.oi b{color:rgba(0,230,255,.8);font-weight:normal}
+.of{font-size:52px;font-weight:900;color:#ffdd00;text-shadow:0 0 22px #ffdd00;display:none}
+.ob{font-family:monospace;font-size:13px;font-weight:bold;letter-spacing:3px;
+    color:#000;background:#00e6ff;border:none;padding:12px 36px;border-radius:40px;
+    cursor:pointer;box-shadow:0 0 22px rgba(0,230,255,.5);transition:all .18s;
+    pointer-events:all;margin-top:4px;-webkit-tap-highlight-color:transparent}
+.ob:active{transform:scale(0.95)}
+
+#perm-err{font-size:11px;color:#ff6666;text-align:center;max-width:300px;display:none}
+
+@keyframes glow{0%,100%{text-shadow:0 0 28px #00e6ff}50%{text-shadow:0 0 55px #00e6ff,0 0 90px rgba(0,230,255,.45)}}
+</style>
+
+<script>
+// ═══ AUDIO ═══
+let AC;
+function initAC(){if(!AC)AC=new(window.AudioContext||window.webkitAudioContext)()}
+function tone(f,t,d,v,dl){
+  if(!AC)return;dl=dl||0;v=v||.28;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type=t;o.frequency.value=f;
+  const now=AC.currentTime+dl;
+  g.gain.setValueAtTime(v,now);
+  g.gain.exponentialRampToValueAtTime(.001,now+d);
+  o.start(now);o.stop(now+d);
+}
+function sfxGem() {tone(523,'sine',.07,.45);tone(659,'sine',.08,.45,.065);tone(880,'sine',.11,.45,.13)}
+function sfxBomb(){tone(160,'sawtooth',.28,.5);tone(80,'square',.35,.45,.09)}
+function sfxEnd() {[360,290,230,170].forEach((f,i)=>tone(f,'sine',.4,.4,i*.19))}
+function sfxCombo(){[659,784,1047].forEach((f,i)=>tone(f,'sine',.1,.5,i*.07))}
+
+// ═══ STATE ═══
+let score=0,lives=3,timeLeft=60,combo=0,comboTmr;
+let active=false,timerInt;
+let userLat=null,userLng=null,gpsReady=false;
+let arItems=[];  // {el, lat, lng, type, collected}
+let geoWatchId=null;
+let spawnNeeded=true;
+let lastShotAt=0;
+let localMode=false;
+let spawnFallbackTmr=null;
+
+function $id(id){return document.getElementById(id)}
+function rnd(a,b){return a+Math.random()*(b-a)}
+
+function updateHUD(){
+  $id('hv-s').textContent=score;
+  $id('hv-t').textContent=timeLeft;
+  $id('hv-l').textContent='❤'.repeat(Math.max(0,lives))+'🖤'.repeat(Math.max(0,3-lives));
+}
+function popup(msg,col){
+  const el=$id('popup');
+  el.textContent=msg;el.style.color=col||'#ffdd00';el.style.opacity='1';
+  clearTimeout(el._t);el._t=setTimeout(()=>el.style.opacity='0',900);
+}
+function flashHair(hit){
+  const h=$id('xhair');
+  h.classList.toggle('hit',!!hit);
+  if(hit)setTimeout(()=>h.classList.remove('hit'),200);
+}
+
+// ═══ GPS ═══
+function startGPS(){
+  stopGPS();
+  localMode=false;
+
+  if(spawnFallbackTmr)clearTimeout(spawnFallbackTmr);
+  // Если GPS долго не дает первую точку, автоматически включаем локальный режим.
+  spawnFallbackTmr=setTimeout(()=>{
+    if(spawnNeeded&&active){
+      localMode=true;
+      setGPSStatus('LOCAL AR: GPS не пойман, включен fallback',true);
+      simulateGPS();
+    }
+  },7000);
+
+  if(!window.isSecureContext){
+    setGPSStatus('Нужен HTTPS для GPS/камеры',false);
+    return;
+  }
+
+  if(!('geolocation' in navigator)){
+    setGPSStatus('GPS не поддерживается',false);
+    // fallback: используем симулированные координаты
+    localMode=true;
+    simulateGPS();
+    return;
+  }
+
+  geoWatchId=navigator.geolocation.watchPosition(
+    pos=>{
+      userLat=pos.coords.latitude;
+      userLng=pos.coords.longitude;
+      const acc=Math.round(pos.coords.accuracy);
+      setGPSStatus('GPS ±'+acc+'м',true);
+      if(spawnNeeded){
+        gpsReady=true;
+        placeARItems();
+        spawnNeeded=false;
+      }
+      drawRadar();
+    },
+    err=>{
+      setGPSStatus('GPS ошибка: '+err.message,false);
+      localMode=true;
+      simulateGPS();
+    },
+    {enableHighAccuracy:true,maximumAge:3000,timeout:10000}
+  );
+}
+
+function stopGPS(){
+  if(geoWatchId!==null){
+    navigator.geolocation.clearWatch(geoWatchId);
+    geoWatchId=null;
+  }
+  if(spawnFallbackTmr){
+    clearTimeout(spawnFallbackTmr);
+    spawnFallbackTmr=null;
+  }
+}
+
+function simulateGPS(){
+  if(localMode){
+    setGPSStatus('LOCAL AR: без GPS (камера only)',true);
+    if(spawnNeeded){
+      placeARItems();
+      spawnNeeded=false;
+    }
+    $id('radar').style.display='none';
+    return;
+  }
+
+  // Симуляция для десктопа / если нет GPS
+  userLat=55.7558; userLng=37.6173; // Москва по умолчанию
+  setGPSStatus('GPS: симуляция (Desktop)',true);
+  if(spawnNeeded){ gpsReady=true; placeARItems(); spawnNeeded=false; }
+}
+
+function setGPSStatus(msg,ok){
+  const bar=$id('gps-bar');
+  const left=arItems.filter(i=>!i.collected).length;
+  const suffix=left?(' | targets: '+left):'';
+  bar.innerHTML='<span class="dot'+(ok?' ok':'')+'"></span>'+msg+suffix;
+}
+
+// ═══ РАЗМЕЩЕНИЕ AR ОБЪЕКТОВ ПО GPS ═══
+function placeARItems(){
+  const sc=document.querySelector('a-scene');
+  if(!sc)return;
+  if(!localMode&&!userLat)return;
+
+  // Очищаем старые
+  arItems.forEach(item=>{if(item.el&&item.el.parentNode)item.el.parentNode.removeChild(item.el)});
+  arItems=[];
+
+  const COLS=['#00e6ff','#aaff00','#ff44cc','#ffdd00','#00ffaa'];
+
+  // 6 кристаллов + 2 бомбы вокруг игрока
+  const configs=[
+    {type:'gem', dLat:0.00005, dLng:0.00003},
+    {type:'gem', dLat:-0.00004, dLng:0.00006},
+    {type:'gem', dLat:0.00003, dLng:-0.00005},
+    {type:'gem', dLat:-0.00006,dLng:-0.00003},
+    {type:'gem', dLat:0.00007, dLng:0.00002},
+    {type:'gem', dLat:-0.00002,dLng:0.00007},
+    {type:'bomb',dLat:0.00004, dLng:-0.00004},
+    {type:'bomb',dLat:-0.00007,dLng:0.00005},
+  ];
+
+  configs.forEach((cfg,i)=>{
+    const lat=localMode?null:userLat+cfg.dLat;
+    const lng=localMode?null:userLng+cfg.dLng;
+    const col=COLS[Math.floor(Math.random()*COLS.length)];
+    const isBomb=cfg.type==='bomb';
+
+    // Родитель: GPS режим или локальный режим без GPS.
+    const par=document.createElement('a-entity');
+    if(localMode){
+      const x=rnd(-2.5,2.5);
+      const y=rnd(0.5,2.1);
+      const z=-rnd(2.2,6.5);
+      par.setAttribute('position',x.toFixed(2)+' '+y.toFixed(2)+' '+z.toFixed(2));
+    }else{
+      par.setAttribute('gps-entity-place','latitude:'+lat+';longitude:'+lng);
+      par.setAttribute('position','0 '+(1+Math.random()*1.5)+' 0');
+    }
+
+    // Анимации
+    par.setAttribute('animation__float',
+      'property:position;from:0 1 0;to:0 1.6 0;dur:'+(1600+i*200)+';dir:alternate;loop:true;easing:easeInOutSine');
+    par.setAttribute('animation__spin',
+      'property:rotation;from:0 0 0;to:0 360 0;dur:2500;loop:true;easing:linear');
+    par.setAttribute('animation__collect',
+      'property:scale;to:0.01 0.01 0.01;startEvents:collected;dur:220;easing:easeInBack');
+
+    // Тело объекта
+    const body=document.createElement(isBomb?'a-sphere':'a-dodecahedron');
+    body.setAttribute('radius',isBomb?'0.5':'0.45');
+    body.setAttribute('color',isBomb?'#cc2200':col);
+    body.setAttribute('metalness','0.5'); body.setAttribute('roughness','0.1');
+    if(!isBomb) body.setAttribute('animation__pulse',
+      'property:scale;from:1 1 1;to:1.3 1.3 1.3;dur:900;dir:alternate;loop:true');
+    if(isBomb) body.setAttribute('animation__blink',
+      'property:color;from:#cc2200;to:#ff5500;dur:400;dir:alternate;loop:true');
+
+    // Кольцо
+    const ring=document.createElement('a-torus');
+    ring.setAttribute('radius',isBomb?'0.68':'0.58');
+    ring.setAttribute('radius-tubular','0.045');
+    ring.setAttribute('color',isBomb?'#ff2200':col);
+    ring.setAttribute('opacity','0.55'); ring.setAttribute('transparent','true');
+    ring.setAttribute('animation',
+      'property:rotation;from:0 0 0;to:0 0 360;dur:1800;loop:true;easing:linear');
+
+    // Свет
+    const lt=document.createElement('a-light');
+    lt.setAttribute('type','point');
+    lt.setAttribute('color',isBomb?'#ff2200':col);
+    lt.setAttribute('intensity','1.2'); lt.setAttribute('distance','4');
+
+    // Подпись (без внешних шрифтов — просто цветной куб как метка)
+    const marker=document.createElement('a-box');
+    marker.setAttribute('width','0.08'); marker.setAttribute('height','0.08'); marker.setAttribute('depth','0.08');
+    marker.setAttribute('color',isBomb?'#ff2200':col);
+    marker.setAttribute('position','0 0.55 0');
+
+    par.appendChild(body); par.appendChild(ring); par.appendChild(lt); par.appendChild(marker);
+    sc.appendChild(par);
+
+    const item={el:par,lat,lng,type:cfg.type,collected:false,body};
+    arItems.push(item);
+  });
+
+  if(localMode){
+    $id('radar').style.display='none';
+  }else{
+    $id('radar').style.display='block';
+    drawRadar();
+  }
+
+  setGPSStatus(localMode?'LOCAL AR: цели размещены':'GPS цели размещены',true);
+}
+
+// ═══ ВЫСТРЕЛ (нажатие кнопки или тап) ═══
+function shoot(){
+  if(!active)return;
+  const now=Date.now();
+  // На мобильных tap/click могут дублироваться: блокируем слишком частые выстрелы.
+  if(now-lastShotAt<180)return;
+  lastShotAt=now;
+  initAC();
+
+  // Ищем ближайший объект в прицеле через raycaster камеры
+  const cam=$id('ar-cam');
+  if(!cam)return;
+
+  // Вручную проверяем: какой AR объект ближе всего к центру экрана
+  const cPos=new THREE.Vector3();
+  const cDir=new THREE.Vector3();
+  cam.object3D.getWorldPosition(cPos);
+  cam.object3D.getWorldDirection(cDir);
+
+  let bestItem=null, bestDot=-1;
+
+  arItems.forEach(item=>{
+    if(item.collected||!item.el.object3D)return;
+    const iPos=new THREE.Vector3();
+    item.el.object3D.getWorldPosition(iPos);
+    const toItem=new THREE.Vector3().subVectors(iPos,cPos).normalize();
+    const dot=cDir.dot(toItem);
+    const dist=cPos.distanceTo(iPos);
+    // Должен быть в пределах угла ~25° (dot > 0.9) и ближе 40м
+    if(dot>0.9 && dist<40 && dot>bestDot){
+      bestDot=dot; bestItem=item;
+    }
+  });
+
+  if(bestItem){
+    collectItem(bestItem);
+  } else {
+    // Промах — небольшой визуальный эффект
+    flashHair(false);
+    popup('MISS','rgba(255,255,255,.5)');
+  }
+}
+
+function collectItem(item){
+  if(item.collected)return;
+  item.collected=true;
+  flashHair(true);
+
+  if(item.type==='gem'){
+    sfxGem(); combo++;
+    clearTimeout(comboTmr);
+    comboTmr=setTimeout(()=>{combo=0;},1500);
+    const pts=10*Math.max(1,combo); score+=pts;
+    if(combo>=3){sfxCombo();popup('COMBO ×'+combo+'  +'+pts,'#aaff00')}
+    else popup('+'+pts,'#ffdd00');
+  } else {
+    sfxBomb(); combo=0; lives--;
+    popup('💥 BOMB!','#ff3366');
+  }
+
+  item.el.emit('collected');
+  updateHUD();
+  setTimeout(()=>{ if(item.el.parentNode)item.el.parentNode.removeChild(item.el); },240);
+  drawRadar();
+
+  // Если всё собрано — респавн
+  const left=arItems.filter(i=>!i.collected).length;
+  if(left===0){ popup('ALL COLLECTED! ✨','#aaff00'); setTimeout(placeARItems,1500); }
+  if(lives<=0)endGame('NO LIVES LEFT');
+}
+
+// ═══ РАДАР ═══
+function drawRadar(){
+  if(localMode)return;
+  const canvas=document.createElement('canvas');
+  canvas.width=90; canvas.height=90;
+  const ctx=canvas.getContext('2d');
+  const cx=45,cy=45,r=43;
+
+  ctx.clearRect(0,0,90,90);
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.fillStyle='rgba(0,0,0,.65)';ctx.fill();
+
+  // Окружности
+  [14,28,43].forEach(gr=>{
+    ctx.beginPath();ctx.arc(cx,cy,gr,0,Math.PI*2);
+    ctx.strokeStyle='rgba(0,230,255,.18)';ctx.lineWidth=0.5;ctx.stroke();
+  });
+  // Крест
+  ctx.strokeStyle='rgba(0,230,255,.12)';ctx.lineWidth=0.5;
+  ctx.beginPath();ctx.moveTo(cx-r,cy);ctx.lineTo(cx+r,cy);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cx,cy-r);ctx.lineTo(cx,cy+r);ctx.stroke();
+
+  // Игрок
+  ctx.beginPath();ctx.arc(cx,cy,4,0,Math.PI*2);
+  ctx.fillStyle='#00e6ff';ctx.fill();
+
+  // Объекты
+  if(userLat){
+    arItems.filter(i=>!i.collected).forEach(item=>{
+      const dlat=(item.lat-userLat)*111000;
+      const dlng=(item.lng-userLng)*111000*Math.cos(userLat*Math.PI/180);
+      const scale=r/60; // 60м = край
+      const px=cx+dlng*scale, py=cy-dlat*scale;
+      if(px>2&&px<88&&py>2&&py<88){
+        ctx.beginPath();ctx.arc(px,py,3,0,Math.PI*2);
+        ctx.fillStyle=item.type==='gem'?'#ffdd00':'#ff3300';
+        ctx.fill();
+      }
+    });
+  }
+
+  // Бордер
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.strokeStyle='rgba(0,230,255,.5)';ctx.lineWidth=1.5;ctx.stroke();
+
+  const radarEl=$id('radar');
+  radarEl.style.backgroundImage='url('+canvas.toDataURL()+')';
+  radarEl.style.backgroundSize='cover';
+}
+
+// ═══ СТАРТ ═══
+function startGame(){
+  initAC();
+  resetRound();
+  score=0;lives=3;timeLeft=60;combo=0;active=true;
+  $id('overlay').style.display='none';
+  $id('xhair').style.display='block';
+  $id('shoot-btn').style.display='flex';
+  $id('hv-t').style.color='#ff8c00';
+  updateHUD();
+  startGPS();
+
+  clearInterval(timerInt);
+  timerInt=setInterval(()=>{
+    if(!active)return;
+    timeLeft--;
+    if(timeLeft<=10)$id('hv-t').style.color='#ff3366';
+    updateHUD();
+    if(timeLeft<=0)endGame("TIME'S UP");
+  },1000);
+}
+
+function endGame(reason){
+  active=false; clearInterval(timerInt); sfxEnd();
+  $id('xhair').style.display='none';
+  $id('shoot-btn').style.display='none';
+  $id('ov-title').textContent='GAME OVER';
+  $id('ov-sub').textContent=reason;
+  const f=$id('ov-final'); f.textContent=score+' PTS'; f.style.display='block';
+  $id('ov-instr').style.display='none';
+  $id('ov-btn').textContent='↺ СНОВА';
+  $id('overlay').style.display='flex';
+}
+
+function resetRound(){
+  arItems.forEach(item=>{
+    if(item.el&&item.el.parentNode)item.el.parentNode.removeChild(item.el);
+  });
+  arItems=[];
+  spawnNeeded=true;
+  stopGPS();
+  setGPSStatus('Ожидание GPS...',false);
+}
+
+async function requestRuntimePermissions(){
+  if(!window.isSecureContext){
+    $id('perm-err').style.display='block';
+    $id('perm-err').textContent='Открой страницу по HTTPS, иначе камера и GPS не дадут разрешение.';
+    return false;
+  }
+
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    $id('perm-err').style.display='block';
+    $id('perm-err').textContent='Браузер не поддерживает камеру API. Нужен Chrome/Safari актуальной версии.';
+    return false;
+  }
+
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+    stream.getTracks().forEach(t=>t.stop());
+  }catch(e){
+    $id('perm-err').style.display='block';
+    $id('perm-err').textContent='Доступ к камере отклонен. Разреши камеру в настройках браузера/сайта и перезапусти.';
+    return false;
+  }
+
+  // iOS Safari может требовать явный запрос доступа к ориентации.
+  if(typeof DeviceOrientationEvent!=='undefined' && typeof DeviceOrientationEvent.requestPermission==='function'){
+    try{
+      const res=await DeviceOrientationEvent.requestPermission();
+      if(res!=='granted'){
+        $id('perm-err').style.display='block';
+        $id('perm-err').textContent='Доступ к датчикам отклонен. Разреши Motion & Orientation в Safari.';
+      }
+    }catch(_e){
+      // Не блокируем запуск, если браузер вернул ошибку API.
+    }
+  }
+
+  $id('perm-err').style.display='none';
+  return true;
+}
+
+async function handleStart(){
+  const ok=await requestRuntimePermissions();
+  if(ok)startGame();
+}
+
+// Проверка поддержки камеры
+function checkSupport(){
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    $id('perm-err').style.display='block';
+    $id('perm-err').textContent='Камера не поддерживается в этом браузере. Используй Chrome на Android.';
+  }
+}
+</script>
+</head>
+<body>
+
+<!-- HUD -->
+<div id="hud">
+  <div class="hp"><div class="hl">SCORE</div><div class="hv" id="hv-s">0</div></div>
+  <div class="hp" id="ht"><div class="hl">TIME</div><div class="hv" id="hv-t">60</div></div>
+  <div class="hp" id="hlv"><div class="hl">LIVES</div><div class="hv" id="hv-l">❤❤❤</div></div>
+</div>
+
+<div id="xhair"></div>
+<div id="popup"></div>
+<div id="gps-bar"><span class="dot"></span>Ожидание GPS...</div>
+<div id="radar"></div>
+
+<!-- Кнопка выстрела -->
+<div id="shoot-btn" onclick="shoot()">🎯</div>
+
+<!-- Оверлей -->
+<div id="overlay">
+  <div class="ot" id="ov-title">VOID RUNNER AR</div>
+  <div class="os" id="ov-sub">ПОКЕМОН ГО — НО ТВОЯ ИГРА</div>
+  <div class="of" id="ov-final"></div>
+  <div class="oi" id="ov-instr">
+    <b>Как играть:</b><br>
+    Наведи телефон на <b>💎 кристалл</b><br>
+    в реальном мире → нажми 🎯<br><br>
+    Не стреляй в <b>💣 красные бомбы</b><br>
+    Кристаллы расставлены вокруг тебя по GPS<br><br>
+    Нужен: <b>Chrome + камера + GPS</b>
+  </div>
+  <div id="perm-err"></div>
+  <button class="ob" id="ov-btn" onclick="handleStart()">▶ ЗАПУСТИТЬ AR</button>
+</div>
+
+<!-- ══════ A-FRAME AR СЦЕНА ══════ -->
+<a-scene
+  vr-mode-ui="enabled:false"
+  loading-screen="enabled:false"
+  renderer="antialias:true;colorManagement:true;logarithmicDepthBuffer:true"
+  embedded
+  arjs="sourceType:webcam;videoTexture:true;debugUIEnabled:false;trackingMethod:best">
+
+  <!-- GPS камера -->
+  <a-camera
+    id="ar-cam"
+    gps-camera="minDistance:1;maxDistance:500"
+    rotation-reader>
+  </a-camera>
+
+</a-scene>
+
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+  checkSupport();
+
+  // Клик/тап по сцене тоже стреляет
+  const scene=document.querySelector('a-scene');
+  scene.addEventListener('click', shoot);
+  scene.addEventListener('touchstart',e=>{e.preventDefault();shoot();},{passive:false});
+
+  const shootBtn=$id('shoot-btn');
+  shootBtn.addEventListener('touchstart',e=>{e.preventDefault();shoot();},{passive:false});
+
+  // Убираем контекстное меню на долгом тапе
+  document.addEventListener('contextmenu',e=>e.preventDefault());
+
+  // Корректно очищаем GPS watcher при закрытии страницы.
+  window.addEventListener('beforeunload',stopGPS);
+});
+</script>
+</body>
+</html>
