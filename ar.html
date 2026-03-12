@@ -7,7 +7,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/aframe/1.4.2/aframe.min.js"></script>
 <!-- AR.js для A-Frame (GPS + камера) -->
-<script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar.js"></script>
 
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -143,6 +143,10 @@ let spawnNeeded=true;
 let lastShotAt=0;
 let localMode=false;
 let spawnFallbackTmr=null;
+let radarInt=null;
+let headingDeg=null;
+let forceVisibleAroundPlayer=true;
+let frontDebugEl=null;
 
 function $id(id){return document.getElementById(id)}
 function rnd(a,b){return a+Math.random()*(b-a)}
@@ -231,7 +235,7 @@ function simulateGPS(){
       placeARItems();
       spawnNeeded=false;
     }
-    $id('radar').style.display='none';
+    $id('radar').style.display='block';
     return;
   }
 
@@ -248,11 +252,32 @@ function setGPSStatus(msg,ok){
   bar.innerHTML='<span class="dot'+(ok?' ok':'')+'"></span>'+msg+suffix;
 }
 
+function normalize360(v){
+  return ((v%360)+360)%360;
+}
+
+function updateHeadingFromEvent(e){
+  let hd=null;
+  if(typeof e.webkitCompassHeading==='number'){
+    hd=e.webkitCompassHeading;
+  }else if(typeof e.alpha==='number'){
+    // alpha растет по часовой стрелке, переводим к compass heading.
+    hd=360-e.alpha;
+  }
+  if(hd===null||Number.isNaN(hd))return;
+  headingDeg=normalize360(hd);
+}
+
+function startHeadingTracking(){
+  window.addEventListener('deviceorientationabsolute',updateHeadingFromEvent,true);
+  window.addEventListener('deviceorientation',updateHeadingFromEvent,true);
+}
+
 // ═══ РАЗМЕЩЕНИЕ AR ОБЪЕКТОВ ПО GPS ═══
 function placeARItems(){
   const sc=document.querySelector('a-scene');
   if(!sc)return;
-  if(!localMode&&!userLat)return;
+  if(!localMode&&!userLat&&!forceVisibleAroundPlayer)return;
 
   // Очищаем старые
   arItems.forEach(item=>{if(item.el&&item.el.parentNode)item.el.parentNode.removeChild(item.el)});
@@ -277,22 +302,31 @@ function placeARItems(){
     const lng=localMode?null:userLng+cfg.dLng;
     const col=COLS[Math.floor(Math.random()*COLS.length)];
     const isBomb=cfg.type==='bomb';
+    let baseX='0.00',baseY=(1+Math.random()*1.5).toFixed(2),baseZ='0.00';
 
     // Родитель: GPS режим или локальный режим без GPS.
     const par=document.createElement('a-entity');
-    if(localMode){
-      const x=rnd(-2.5,2.5);
-      const y=rnd(0.5,2.1);
-      const z=-rnd(2.2,6.5);
-      par.setAttribute('position',x.toFixed(2)+' '+y.toFixed(2)+' '+z.toFixed(2));
+    if(localMode||forceVisibleAroundPlayer){
+      // Всегда размещаем объекты в 3D-вокруге игрока, чтобы они были видимы при повороте камеры.
+      let angle=(Math.PI*2/configs.length)*i+rnd(-0.3,0.3);
+      let radius=rnd(2.5,6.5);
+      if(i===0){ angle=rnd(-0.18,0.18); radius=rnd(2.4,3.2); }
+      if(i===1){ angle=rnd(-0.45,0.45); radius=rnd(3.0,3.8); }
+      const x=Math.sin(angle)*radius;
+      const y=rnd(0.6,2.2);
+      const z=-Math.cos(angle)*radius;
+      baseX=x.toFixed(2);
+      baseY=y.toFixed(2);
+      baseZ=z.toFixed(2);
+      par.setAttribute('position',baseX+' '+baseY+' '+baseZ);
     }else{
       par.setAttribute('gps-entity-place','latitude:'+lat+';longitude:'+lng);
-      par.setAttribute('position','0 '+(1+Math.random()*1.5)+' 0');
+      par.setAttribute('position','0 '+baseY+' 0');
     }
 
     // Анимации
     par.setAttribute('animation__float',
-      'property:position;from:0 1 0;to:0 1.6 0;dur:'+(1600+i*200)+';dir:alternate;loop:true;easing:easeInOutSine');
+      'property:position;from:'+baseX+' '+baseY+' '+baseZ+';to:'+baseX+' '+(Number(baseY)+0.6).toFixed(2)+' '+baseZ+';dur:'+(1600+i*200)+';dir:alternate;loop:true;easing:easeInOutSine');
     par.setAttribute('animation__spin',
       'property:rotation;from:0 0 0;to:0 360 0;dur:2500;loop:true;easing:linear');
     par.setAttribute('animation__collect',
@@ -302,7 +336,7 @@ function placeARItems(){
     const body=document.createElement(isBomb?'a-sphere':'a-dodecahedron');
     body.setAttribute('radius',isBomb?'0.5':'0.45');
     body.setAttribute('color',isBomb?'#cc2200':col);
-    body.setAttribute('metalness','0.5'); body.setAttribute('roughness','0.1');
+    body.setAttribute('material','shader:flat;opacity:0.98;transparent:true');
     if(!isBomb) body.setAttribute('animation__pulse',
       'property:scale;from:1 1 1;to:1.3 1.3 1.3;dur:900;dir:alternate;loop:true');
     if(isBomb) body.setAttribute('animation__blink',
@@ -336,14 +370,40 @@ function placeARItems(){
     arItems.push(item);
   });
 
-  if(localMode){
-    $id('radar').style.display='none';
+  $id('radar').style.display='block';
+  drawRadar();
+
+  if(forceVisibleAroundPlayer){
+    setGPSStatus('VISIBLE MODE: кристаллы вокруг тебя',true);
   }else{
-    $id('radar').style.display='block';
-    drawRadar();
+    setGPSStatus(localMode?'LOCAL AR: цели размещены':'GPS цели размещены',true);
   }
 
-  setGPSStatus(localMode?'LOCAL AR: цели размещены':'GPS цели размещены',true);
+  function ensureFrontDebugCrystal(){
+    const sc=document.querySelector('a-scene');
+    if(!sc)return;
+    if(frontDebugEl&&frontDebugEl.parentNode)frontDebugEl.parentNode.removeChild(frontDebugEl);
+
+    const el=document.createElement('a-entity');
+    el.setAttribute('position','0 1.5 -1.8');
+    const body=document.createElement('a-box');
+    body.setAttribute('width','0.42');
+    body.setAttribute('height','0.42');
+    body.setAttribute('depth','0.42');
+    body.setAttribute('color','#00ffff');
+    body.setAttribute('material','shader:flat;opacity:0.95;transparent:true');
+    body.setAttribute('animation','property:rotation;to:360 360 0;dur:2200;loop:true;easing:linear');
+    const ring=document.createElement('a-ring');
+    ring.setAttribute('radius-inner','0.28');
+    ring.setAttribute('radius-outer','0.34');
+    ring.setAttribute('color','#ffdd00');
+    ring.setAttribute('position','0 0 0.02');
+
+    el.appendChild(body);
+    el.appendChild(ring);
+    sc.appendChild(el);
+    frontDebugEl=el;
+  }
 }
 
 // ═══ ВЫСТРЕЛ (нажатие кнопки или тап) ═══
@@ -374,8 +434,8 @@ function shoot(){
     const toItem=new THREE.Vector3().subVectors(iPos,cPos).normalize();
     const dot=cDir.dot(toItem);
     const dist=cPos.distanceTo(iPos);
-    // Должен быть в пределах угла ~25° (dot > 0.9) и ближе 40м
-    if(dot>0.9 && dist<40 && dot>bestDot){
+    // Немного расширенный угол захвата для мобильного AR.
+    if(dot>0.82 && dist<50 && dot>bestDot){
       bestDot=dot; bestItem=item;
     }
   });
@@ -419,7 +479,6 @@ function collectItem(item){
 
 // ═══ РАДАР ═══
 function drawRadar(){
-  if(localMode)return;
   const canvas=document.createElement('canvas');
   canvas.width=90; canvas.height=90;
   const ctx=canvas.getContext('2d');
@@ -443,13 +502,56 @@ function drawRadar(){
   ctx.beginPath();ctx.arc(cx,cy,4,0,Math.PI*2);
   ctx.fillStyle='#00e6ff';ctx.fill();
 
+  // Линия направления вперед.
+  ctx.beginPath();
+  ctx.moveTo(cx,cy);
+  ctx.lineTo(cx,cy-r+6);
+  ctx.strokeStyle='rgba(0,230,255,.65)';
+  ctx.lineWidth=1.2;
+  ctx.stroke();
+
   // Объекты
-  if(userLat){
+  if(localMode||forceVisibleAroundPlayer){
+    const cam=$id('ar-cam');
+    if(cam&&cam.object3D){
+      const cPos=new THREE.Vector3();
+      const cQuat=new THREE.Quaternion();
+      cam.object3D.getWorldPosition(cPos);
+      cam.object3D.getWorldQuaternion(cQuat);
+
+      const right=new THREE.Vector3(1,0,0).applyQuaternion(cQuat); right.y=0;
+      const forward=new THREE.Vector3(0,0,-1).applyQuaternion(cQuat); forward.y=0;
+      if(right.lengthSq()>0)right.normalize();
+      if(forward.lengthSq()>0)forward.normalize();
+
+      arItems.filter(i=>!i.collected).forEach(item=>{
+        if(!item.el||!item.el.object3D)return;
+        const iPos=new THREE.Vector3();
+        item.el.object3D.getWorldPosition(iPos);
+        const rel=new THREE.Vector3().subVectors(iPos,cPos);
+        const rx=rel.dot(right);
+        const ry=rel.dot(forward);
+        const scale=r/20; // 20м = край
+        const px=cx+rx*scale, py=cy-ry*scale;
+        if(px>2&&px<88&&py>2&&py<88){
+          ctx.beginPath();ctx.arc(px,py,3,0,Math.PI*2);
+          ctx.fillStyle=item.type==='gem'?'#ffdd00':'#ff3300';
+          ctx.fill();
+        }
+      });
+    }
+  } else if(userLat){
+    const headingRad=(headingDeg===null?0:headingDeg)*Math.PI/180;
     arItems.filter(i=>!i.collected).forEach(item=>{
       const dlat=(item.lat-userLat)*111000;
       const dlng=(item.lng-userLng)*111000*Math.cos(userLat*Math.PI/180);
+      const dist=Math.sqrt(dlat*dlat+dlng*dlng);
+      const bearing=Math.atan2(dlng,dlat); // восток/север -> азимут
+      const rel=bearing-headingRad;
+      const rx=Math.sin(rel)*dist;
+      const ry=Math.cos(rel)*dist;
       const scale=r/60; // 60м = край
-      const px=cx+dlng*scale, py=cy-dlat*scale;
+      const px=cx+rx*scale, py=cy-ry*scale;
       if(px>2&&px<88&&py>2&&py<88){
         ctx.beginPath();ctx.arc(px,py,3,0,Math.PI*2);
         ctx.fillStyle=item.type==='gem'?'#ffdd00':'#ff3300';
@@ -478,6 +580,11 @@ function startGame(){
   $id('hv-t').style.color='#ff8c00';
   updateHUD();
   startGPS();
+  ensureFrontDebugCrystal();
+  $id('radar').style.display='block';
+
+  if(radarInt)clearInterval(radarInt);
+  radarInt=setInterval(drawRadar,250);
 
   clearInterval(timerInt);
   timerInt=setInterval(()=>{
@@ -491,6 +598,8 @@ function startGame(){
 
 function endGame(reason){
   active=false; clearInterval(timerInt); sfxEnd();
+  if(radarInt){clearInterval(radarInt);radarInt=null;}
+  if(frontDebugEl&&frontDebugEl.parentNode){frontDebugEl.parentNode.removeChild(frontDebugEl);frontDebugEl=null;}
   $id('xhair').style.display='none';
   $id('shoot-btn').style.display='none';
   $id('ov-title').textContent='GAME OVER';
@@ -506,8 +615,11 @@ function resetRound(){
     if(item.el&&item.el.parentNode)item.el.parentNode.removeChild(item.el);
   });
   arItems=[];
+  if(frontDebugEl&&frontDebugEl.parentNode){frontDebugEl.parentNode.removeChild(frontDebugEl);frontDebugEl=null;}
   spawnNeeded=true;
+  headingDeg=null;
   stopGPS();
+  if(radarInt){clearInterval(radarInt);radarInt=null;}
   setGPSStatus('Ожидание GPS...',false);
 }
 
@@ -552,7 +664,11 @@ async function requestRuntimePermissions(){
 
 async function handleStart(){
   const ok=await requestRuntimePermissions();
-  if(ok)startGame();
+  if(ok){
+    // Принудительный видимый режим: объекты в любом случае рядом и в кадре.
+    forceVisibleAroundPlayer=true;
+    startGame();
+  }
 }
 
 // Проверка поддержки камеры
@@ -606,11 +722,15 @@ function checkSupport(){
   embedded
   arjs="sourceType:webcam;videoTexture:true;debugUIEnabled:false;trackingMethod:best">
 
+  <a-entity light="type:ambient;intensity:0.9;color:#ffffff"></a-entity>
+  <a-entity light="type:directional;intensity:0.6;color:#ffffff" position="1 2 1"></a-entity>
+
   <!-- GPS камера -->
   <a-camera
     id="ar-cam"
-    gps-camera="minDistance:1;maxDistance:500"
-    rotation-reader>
+    camera="near:0.01;far:1200"
+    look-controls="enabled:true;touchEnabled:true;mouseEnabled:false"
+    wasd-controls="enabled:false">
   </a-camera>
 
 </a-scene>
@@ -618,6 +738,7 @@ function checkSupport(){
 <script>
 document.addEventListener('DOMContentLoaded',()=>{
   checkSupport();
+  startHeadingTracking();
 
   // Клик/тап по сцене тоже стреляет
   const scene=document.querySelector('a-scene');
@@ -631,7 +752,10 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.addEventListener('contextmenu',e=>e.preventDefault());
 
   // Корректно очищаем GPS watcher при закрытии страницы.
-  window.addEventListener('beforeunload',stopGPS);
+  window.addEventListener('beforeunload',()=>{
+    stopGPS();
+    if(radarInt){clearInterval(radarInt);radarInt=null;}
+  });
 });
 </script>
 </body>

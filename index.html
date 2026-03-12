@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>VOID RUNNER</title>
+
+<!-- Только один скрипт, без physics CDN которые могут висеть -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/aframe/1.4.2/aframe.min.js"></script>
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;font-family:monospace}
+
+/* Скрываем дефолтный курсор A-Frame когда играем */
+a-scene canvas { cursor: crosshair !important; }
+body.immersive, body.immersive a-scene canvas { cursor: none !important; }
+
+#hud{
+  position:fixed;top:0;left:0;right:0;z-index:200;
+  display:flex;justify-content:space-between;padding:10px 18px;
+  pointer-events:none;
+}
+.hp{
+  background:rgba(0,0,0,.8);border:1px solid #00e6ff;
+  border-radius:5px;padding:6px 14px;text-align:center;
+  box-shadow:0 0 10px rgba(0,230,255,.2);
+}
+.hl{font-size:9px;letter-spacing:2px;color:rgba(0,230,255,.5)}
+.hv{font-size:22px;font-weight:bold;color:#00e6ff;line-height:1.1}
+#ht .hv{color:#ff8c00} #hlv .hv{color:#ff3366} #hcb .hv{color:#aaff00}
+
+/* Прицел */
+#xhair{
+  position:fixed;top:50%;left:50%;
+  transform:translate(-50%,-50%);
+  width:24px;height:24px;z-index:200;pointer-events:none;display:none;
+}
+#xhair::before,#xhair::after{
+  content:'';position:absolute;background:rgba(0,230,255,.95);
+  border-radius:1px;
+}
+#xhair::before{width:2px;height:100%;left:50%;transform:translateX(-50%)}
+#xhair::after{height:2px;width:100%;top:50%;transform:translateY(-50%)}
+#xhair.hit{border-radius:50%;}
+#xhair.hit::before,#xhair.hit::after{background:#ffdd00;}
+
+/* Попап очков */
+#popup{
+  position:fixed;top:38%;left:50%;transform:translateX(-50%);
+  z-index:201;font-size:34px;font-weight:bold;
+  pointer-events:none;opacity:0;transition:opacity .12s;
+  text-shadow:0 0 12px currentColor;
+}
+
+/* Волна */
+#wavebadge{
+  position:fixed;bottom:14px;left:50%;transform:translateX(-50%);
+  z-index:200;font-size:11px;letter-spacing:2px;color:rgba(0,230,255,.5);
+  background:rgba(0,0,0,.65);border:1px solid rgba(0,230,255,.25);
+  border-radius:4px;padding:5px 14px;pointer-events:none;
+}
+
+/* Оверлей старта/конца */
+#overlay{
+  position:fixed;inset:0;z-index:300;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+  background:radial-gradient(ellipse at 50% 40%,rgba(0,8,30,.97),#000);
+}
+.ot{font-size:clamp(30px,6vw,68px);font-weight:900;color:#00e6ff;
+    letter-spacing:5px;text-shadow:0 0 28px #00e6ff;animation:glow 2s ease-in-out infinite}
+.os{font-size:11px;letter-spacing:4px;color:rgba(0,230,255,.35);margin-top:-8px}
+.oi{font-size:13px;line-height:2.2;text-align:center;color:rgba(255,255,255,.4);max-width:360px}
+.oi b{color:rgba(0,230,255,.85);font-weight:normal}
+.of{font-size:56px;font-weight:900;color:#ffdd00;text-shadow:0 0 22px #ffdd00;display:none}
+.ob{font-family:monospace;font-size:14px;font-weight:bold;letter-spacing:3px;
+    color:#000;background:#00e6ff;border:none;padding:12px 42px;border-radius:4px;
+    cursor:pointer;box-shadow:0 0 22px rgba(0,230,255,.5);transition:all .18s;
+    pointer-events:all;margin-top:4px}
+.ob:hover{background:#fff;transform:scale(1.04)}
+
+@keyframes glow{0%,100%{text-shadow:0 0 28px #00e6ff}50%{text-shadow:0 0 55px #00e6ff,0 0 90px rgba(0,230,255,.45)}}
+</style>
+
+<!-- ══ Регистрируем компоненты ДО инициализации сцены ══ -->
+<script>
+// ───── AUDIO ─────
+let AC;
+function initAC(){if(!AC)AC=new(window.AudioContext||window.webkitAudioContext)()}
+function resumeAC(){if(AC&&AC.state==='suspended')AC.resume()}
+function tone(f,t,d,v,dl){
+  if(!AC)return; dl=dl||0; v=v||.28;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type=t;o.frequency.value=f;
+  const now=AC.currentTime+dl;
+  g.gain.setValueAtTime(v,now);
+  g.gain.exponentialRampToValueAtTime(.001,now+d);
+  o.start(now);o.stop(now+d);
+}
+function sfxGem() {tone(523,'sine',.07,.45);tone(659,'sine',.08,.45,.065);tone(880,'sine',.11,.45,.13)}
+function sfxBomb(){tone(160,'sawtooth',.28,.5);tone(80,'square',.35,.45,.09)}
+function sfxEnd() {[360,290,230,170].forEach((f,i)=>tone(f,'sine',.4,.4,i*.19))}
+function sfxCombo(){[659,784,1047].forEach((f,i)=>tone(f,'sine',.1,.5,i*.07))}
+function sfxWave() {tone(440,'sine',.09,.4);tone(660,'sine',.13,.4,.1)}
+
+// ───── STATE ─────
+let score=0,lives=3,timeLeft=30,wave=1,combo=0,comboTmr;
+let active=false,timerInt,waveInt,spawnTmr;
+function $id(id){return document.getElementById(id)}
+function rnd(a,b){return a+Math.random()*(b-a)}
+function worldPos(el){
+  const v=new THREE.Vector3();
+  el.object3D.getWorldPosition(v);
+  return {x:v.x,y:v.y,z:v.z};
+}
+
+function updateHUD(){
+  $id('hv-s').textContent=score;
+  $id('hv-t').textContent=timeLeft;
+  $id('hv-c').textContent=combo>1?'×'+combo:'×1';
+  $id('hv-l').textContent='❤'.repeat(Math.max(0,lives))+'🖤'.repeat(Math.max(0,3-lives));
+  $id('wavebadge').textContent='WAVE '+wave+(active?'  ·  '+timeLeft+'s':'');
+}
+function popup(msg,col){
+  const el=$id('popup');
+  el.textContent=msg;el.style.color=col||'#ffdd00';el.style.opacity='1';
+  clearTimeout(el._t);el._t=setTimeout(()=>el.style.opacity='0',850);
+}
+function flashHair(){
+  const h=$id('xhair');h.classList.add('hit');
+  setTimeout(()=>h.classList.remove('hit'),200);
+}
+
+// ───── КОМПОНЕНТ: кристалл ─────
+AFRAME.registerComponent('gem-item',{
+  init:function(){
+    this.el.addEventListener('shot',()=>{
+      if(!active||this.used)return;
+      this.used=true;
+      sfxGem(); combo++;
+      clearTimeout(comboTmr);
+      comboTmr=setTimeout(()=>{combo=0;updateHUD()},1500);
+      const pts=10*Math.max(1,combo); score+=pts;
+      if(combo>=3){sfxCombo();popup('COMBO ×'+combo+'  +'+pts,'#aaff00')}
+      else popup('+'+pts,'#ffdd00');
+      flashHair();
+      const root=this.el.parentNode;
+      boom(worldPos(this.el),'#ffdd00');
+      root.emit('collected');
+      updateHUD();
+      const el=root;
+      setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el)},230);
+    });
+  }
+});
+
+// ───── КОМПОНЕНТ: бомба ─────
+AFRAME.registerComponent('bomb-item',{
+  init:function(){
+    this.el.addEventListener('shot',()=>{
+      if(!active||this.used)return;
+      this.used=true;
+      sfxBomb(); combo=0; lives--;
+      popup('💥 BOMB!','#ff3366');
+      const root=this.el.parentNode;
+      boom(worldPos(this.el),'#ff3300');
+      root.emit('collected');
+      updateHUD();
+      const el=root;
+      setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el)},200);
+      if(lives<=0)endGame('NO LIVES LEFT');
+    });
+  }
+});
+
+function shootAtCenter(){
+  if(!active)return;
+  const cam=$id('playerCam');
+  if(!cam||!cam.components.raycaster)return;
+  cam.components.raycaster.refreshObjects();
+  const hit=cam.components.raycaster.intersections[0];
+  if(hit&&hit.object&&hit.object.el)hit.object.el.emit('shot');
+}
+
+function tryPointerLock(){
+  const sc=document.querySelector('a-scene');
+  if(!sc||!sc.canvas||!sc.canvas.requestPointerLock)return;
+  if(document.pointerLockElement!==sc.canvas)sc.canvas.requestPointerLock();
+}
+</script>
+</head>
+<body>
+
+<!-- HUD -->
+<div id="hud">
+  <div class="hp"><div class="hl">SCORE</div><div class="hv" id="hv-s">0</div></div>
+  <div class="hp" id="ht"><div class="hl">TIME</div><div class="hv" id="hv-t">30</div></div>
+  <div class="hp" id="hcb"><div class="hl">COMBO</div><div class="hv" id="hv-c">×1</div></div>
+  <div class="hp" id="hlv"><div class="hl">LIVES</div><div class="hv" id="hv-l">❤❤❤</div></div>
+</div>
+<div id="xhair"></div>
+<div id="popup"></div>
+<div id="wavebadge">VOID RUNNER</div>
+
+<!-- Оверлей -->
+<div id="overlay">
+  <div class="ot" id="ov-title">VOID RUNNER</div>
+  <div class="os" id="ov-sub">A-FRAME 3D GAME</div>
+  <div class="of" id="ov-final"></div>
+  <div class="oi" id="ov-instr">
+    <b>WASD</b> — движение &nbsp; <b>Мышь</b> — обзор (режим погружения)<br>
+    Наведи на <b>синий/жёлтый кристалл</b> → кликни<br>
+    Не кликай <b>красную бомбу</b> → потеря жизни<br>
+    Быстрые комбо = больше очков! &nbsp; <b>Esc</b> — отпустить курсор
+  </div>
+  <button class="ob" id="ov-btn" onclick="startGame()">▶ ИГРАТЬ</button>
+</div>
+
+<!-- ══════════════ A-FRAME СЦЕНА ══════════════ -->
+<a-scene
+  renderer="antialias:true;colorManagement:true"
+  vr-mode-ui="enabled:false"
+  loading-screen="enabled:false"
+  background="color:#000010">
+
+  <a-assets timeout="2000">
+    <!-- Текстура земли — canvas, рисуется в JS -->
+    <canvas id="cvs-floor" width="512" height="512" style="display:none"></canvas>
+    <!-- Текстура панели-изображения -->
+    <canvas id="cvs-panel" width="512" height="256" style="display:none"></canvas>
+  </a-assets>
+
+  <!-- НЕБО -->
+  <a-sky color="#000012"></a-sky>
+
+  <!-- СВЕТ -->
+  <a-light type="ambient"     color="#1a2233" intensity="1.5"></a-light>
+  <a-light type="directional" color="#ffffff" intensity="0.55" position="-3 10 -8"></a-light>
+  <a-light type="point" color="#00e6ff" intensity="1.8" position="0 7 -7"
+    animation="property:intensity;from:1;to:2.5;dur:2200;dir:alternate;loop:true;easing:easeInOutSine">
+  </a-light>
+  <a-light type="point" color="#7700ff" intensity="0.9" position="14 5 -14"></a-light>
+  <a-light type="point" color="#ff3300" intensity="0.9" position="-14 5 -14"></a-light>
+
+  <!-- ЗЕМЛЯ — получит текстуру из canvas -->
+  <a-plane id="ground"
+    width="60" height="60" rotation="-90 0 0" position="0 0 0"
+    roughness="0.85" metalness="0.2">
+  </a-plane>
+
+  <!-- ИЗОБРАЖЕНИЕ (3D панель — canvas текстура) -->
+  <a-plane id="img-panel"
+    width="5" height="2.2" position="-13 3.5 -7" rotation="0 38 0"
+    animation="property:rotation;from:0 33 0;to:0 43 0;dur:4000;dir:alternate;loop:true;easing:easeInOutSine">
+  </a-plane>
+
+  <!-- ══ ТРАНСФОРМАЦИЯ ПРЕДКОВ И ПОТОМКОВ: станция ══ -->
+  <!-- Родитель вращается — все дочерние наследуют -->
+  <a-entity id="station" position="0 13 -22"
+    animation="property:rotation;from:0 0 0;to:0 360 0;dur:36000;loop:true;easing:linear">
+    <!-- child: ядро -->
+    <a-cylinder radius="0.8" height="4" color="#0a1825" metalness="0.95" roughness="0.05"></a-cylinder>
+    <!-- children: рукава -->
+    <a-cylinder radius="0.18" height="9" color="#112233" position="4.5 0 0"  rotation="0 0 90"></a-cylinder>
+    <a-cylinder radius="0.18" height="9" color="#112233" position="-4.5 0 0" rotation="0 0 90"></a-cylinder>
+    <a-cylinder radius="0.18" height="9" color="#112233" position="0 0 4.5"  rotation="90 0 0"></a-cylinder>
+    <a-cylinder radius="0.18" height="9" color="#112233" position="0 0 -4.5" rotation="90 0 0"></a-cylinder>
+    <!-- grandchildren: сферы на концах (наследуют вращение через parent и child) -->
+    <a-sphere radius="0.5" color="#00ffaa" position="9 0 0"
+      animation="property:scale;from:1 1 1;to:1.6 1.6 1.6;dur:700;dir:alternate;loop:true"></a-sphere>
+    <a-sphere radius="0.5" color="#ff6600" position="-9 0 0"
+      animation="property:scale;from:1 1 1;to:1.6 1.6 1.6;dur:850;dir:alternate;loop:true"></a-sphere>
+    <a-sphere radius="0.5" color="#00aaff" position="0 0 9"
+      animation="property:scale;from:1 1 1;to:1.6 1.6 1.6;dur:650;dir:alternate;loop:true"></a-sphere>
+    <a-sphere radius="0.5" color="#ff00cc" position="0 0 -9"
+      animation="property:scale;from:1 1 1;to:1.6 1.6 1.6;dur:920;dir:alternate;loop:true"></a-sphere>
+    <!-- огни (grandchildren) -->
+    <a-light type="point" color="#00ffaa" intensity="1.2" distance="8" position="9 0 0"></a-light>
+    <a-light type="point" color="#ff6600" intensity="1.2" distance="8" position="-9 0 0"></a-light>
+  </a-entity>
+
+  <!-- ══ 3D МОДЕЛЬ (Blender ship из примитивов, как .glb экспорт) ══ -->
+  <!-- Родитель: позиция + анимации -->
+  <a-entity position="10 2 -10"
+    animation__float="property:position;from:10 1.6 -10;to:10 3 -10;dur:3500;dir:alternate;loop:true;easing:easeInOutCubic"
+    animation__tilt="property:rotation;from:-8 -25 -4;to:8 -15 4;dur:2800;dir:alternate;loop:true;easing:easeInOutSine">
+    <!-- child: фюзеляж -->
+    <a-cone radius-bottom="0.45" radius-top="0.07" height="2.2" color="#2244aa"
+      metalness="0.85" roughness="0.15" rotation="90 0 0"></a-cone>
+    <!-- child: крылья -->
+    <a-box width="2.2" height="0.06" depth="0.75" color="#1a3388" position="-1.1 -0.1 0" rotation="0 0 -10"></a-box>
+    <a-box width="2.2" height="0.06" depth="0.75" color="#1a3388" position=" 1.1 -0.1 0" rotation="0 0  10"></a-box>
+    <!-- grandchild: двигатель (child крыла — тройная вложенность) -->
+    <a-sphere radius="0.22" color="#00ccff" position="0 0 1.2"
+      animation="property:scale;from:1 1 1;to:1.7 1.7 1.7;dur:300;dir:alternate;loop:true"></a-sphere>
+    <a-light type="point" color="#0088ff" intensity="2" distance="5" position="0 0 1.2"></a-light>
+  </a-entity>
+
+  <!-- Второй корабль (другая сторона) -->
+  <a-entity position="-10 2 -10"
+    animation="property:rotation;from:0 0 0;to:0 -360 0;dur:4000;loop:true;easing:linear">
+    <a-cone radius-bottom="0.4" radius-top="0.07" height="2" color="#aa2244" metalness="0.8" rotation="90 0 0"></a-cone>
+    <a-box width="2" height="0.06" depth="0.7" color="#881a33" position="-1 -0.1 0"></a-box>
+    <a-box width="2" height="0.06" depth="0.7" color="#881a33" position=" 1 -0.1 0"></a-box>
+  </a-entity>
+
+  <!-- Динамические звёзды фона и столбы — добавляются в JS -->
+  <a-entity id="bg-stars"></a-entity>
+  <a-entity id="pillars"></a-entity>
+
+  <!-- ══ КАМЕРА — БЕЗ pointerLockEnabled ══ -->
+  <!-- look-controls без pointer lock: держи ЛКМ и двигай мышь -->
+  <a-entity id="rig" position="0 1.6 6">
+    <a-camera
+      id="playerCam"
+      wasd-controls="acceleration:26"
+      look-controls="pointerLockEnabled:true;magicWindowTrackingEnabled:false"
+      raycaster="objects:.target;far:35"
+      fov="80">
+    </a-camera>
+  </a-entity>
+
+</a-scene>
+
+<script>
+// ═══ CANVAS ТЕКСТУРЫ ═══
+function makeTextures(){
+  // Пол
+  const fc=document.getElementById('cvs-floor');
+  const fx=fc.getContext('2d');
+  fx.fillStyle='#020214'; fx.fillRect(0,0,512,512);
+  fx.strokeStyle='rgba(0,200,255,0.2)'; fx.lineWidth=1;
+  for(let i=0;i<=16;i++){
+    const p=i*32;
+    fx.beginPath();fx.moveTo(p,0);fx.lineTo(p,512);fx.stroke();
+    fx.beginPath();fx.moveTo(0,p);fx.lineTo(512,p);fx.stroke();
+  }
+  document.getElementById('ground').setAttribute('src',fc.toDataURL());
+
+  // Панель-изображение
+  const pc=document.getElementById('cvs-panel');
+  const px=pc.getContext('2d');
+  px.fillStyle='#000020'; px.fillRect(0,0,512,256);
+  px.strokeStyle='rgba(0,230,255,0.7)'; px.lineWidth=3;
+  px.strokeRect(4,4,504,248);
+  px.fillStyle='#00e6ff'; px.font='bold 46px monospace'; px.textAlign='center';
+  px.fillText('VOID RUNNER',256,108);
+  px.fillStyle='rgba(255,255,255,0.45)'; px.font='20px monospace';
+  px.fillText('Collect crystals. Avoid bombs.',256,158);
+  px.fillStyle='rgba(0,230,255,0.3)'; px.font='15px monospace';
+  px.fillText('WASD + Mouse Drag',256,205);
+  document.getElementById('img-panel').setAttribute('src',pc.toDataURL());
+}
+
+// ═══ СПАВН КРИСТАЛЛА ═══
+function spawnGem(){
+  if(!active)return;
+  const sc=document.querySelector('a-scene');
+  const x=rnd(-11,11), y=rnd(0.8,3.5), z=rnd(-14,-2);
+  const COLS=['#00e6ff','#aaff00','#ff44cc','#ffdd00','#00ffaa'];
+  const col=COLS[Math.floor(Math.random()*COLS.length)];
+
+  // Родитель
+  const par=document.createElement('a-entity');
+  par.classList.add('spawned-item');
+  par.setAttribute('position',x+' '+y+' '+z);
+  par.setAttribute('animation__float',
+    'property:position;from:'+x+' '+y+' '+z+';to:'+x+' '+(y+0.5)+' '+z+
+    ';dur:'+(1500+rnd(0,600))+';dir:alternate;loop:true;easing:easeInOutSine');
+  par.setAttribute('animation__spin',
+    'property:rotation;from:0 0 0;to:0 360 0;dur:2200;loop:true;easing:linear');
+  // Анимация по событию collected
+  par.setAttribute('animation__collect',
+    'property:scale;to:0.01 0.01 0.01;startEvents:collected;dur:200;easing:easeInBack');
+
+  // Дочерний: гем
+  const gem=document.createElement('a-octahedron');
+  gem.classList.add('target');
+  gem.setAttribute('gem-item','');
+  gem.setAttribute('radius','0.24'); gem.setAttribute('color',col);
+  gem.setAttribute('metalness','0.5'); gem.setAttribute('roughness','0.1');
+  gem.setAttribute('animation__pulse',
+    'property:scale;from:1 1 1;to:1.3 1.3 1.3;dur:850;dir:alternate;loop:true;easing:easeInOutSine');
+
+  // Дочерний: кольцо
+  const ring=document.createElement('a-torus');
+  ring.setAttribute('radius','0.36'); ring.setAttribute('radius-tubular','0.022');
+  ring.setAttribute('color',col); ring.setAttribute('opacity','0.55');
+  ring.setAttribute('transparent','true');
+  ring.setAttribute('animation','property:rotation;from:0 0 0;to:0 0 360;dur:1700;loop:true;easing:linear');
+
+  // Дочерний: свет
+  const lt=document.createElement('a-light');
+  lt.setAttribute('type','point'); lt.setAttribute('color',col);
+  lt.setAttribute('intensity','1.1'); lt.setAttribute('distance','3.5');
+
+  par.appendChild(gem); par.appendChild(ring); par.appendChild(lt);
+  sc.appendChild(par);
+  setTimeout(()=>{if(par.parentNode)par.parentNode.removeChild(par)},
+    Math.max(3000,7500-wave*250));
+}
+
+// ═══ СПАВН БОМБЫ ═══
+function spawnBomb(){
+  if(!active)return;
+  const sc=document.querySelector('a-scene');
+  const x=rnd(-10,10), y=rnd(0.5,2.8), z=rnd(-13,-2);
+
+  const par=document.createElement('a-entity');
+  par.classList.add('spawned-item');
+  par.setAttribute('position',x+' '+y+' '+z);
+  par.setAttribute('animation__float',
+    'property:position;from:'+x+' '+y+' '+z+';to:'+x+' '+(y-0.38)+' '+z+
+    ';dur:'+(1000+rnd(0,500))+';dir:alternate;loop:true;easing:easeInOutSine');
+  par.setAttribute('animation__collect',
+    'property:scale;to:0.01 0.01 0.01;startEvents:collected;dur:180');
+
+  const sph=document.createElement('a-icosahedron');
+  sph.classList.add('target');
+  sph.setAttribute('bomb-item','');
+  sph.setAttribute('radius','0.26'); sph.setAttribute('detail','1');
+  sph.setAttribute('color','#cc2200'); sph.setAttribute('metalness','0.4');
+  // Мигание — анимация цвета
+  sph.setAttribute('animation__blink',
+    'property:color;from:#cc2200;to:#ff5500;dur:420;dir:alternate;loop:true');
+
+  const ring2=document.createElement('a-torus');
+  ring2.setAttribute('radius','0.4'); ring2.setAttribute('radius-tubular','0.025');
+  ring2.setAttribute('color','#ff2200'); ring2.setAttribute('opacity','0.5');
+  ring2.setAttribute('transparent','true');
+  ring2.setAttribute('animation',
+    'property:scale;from:1 1 1;to:1.55 1.55 1.55;dur:520;dir:alternate;loop:true');
+
+  const bl=document.createElement('a-light');
+  bl.setAttribute('type','point'); bl.setAttribute('color','#ff2200');
+  bl.setAttribute('intensity','0.9'); bl.setAttribute('distance','3');
+
+  par.appendChild(sph); par.appendChild(ring2); par.appendChild(bl);
+  sc.appendChild(par);
+  setTimeout(()=>{if(par.parentNode)par.parentNode.removeChild(par)},
+    Math.max(2500,5500-wave*200));
+}
+
+// ═══ ВЗРЫВ ═══
+function boom(pos,col){
+  const sc=document.querySelector('a-scene');
+  for(let i=0;i<9;i++){
+    const p=document.createElement('a-sphere');
+    const vx=(Math.random()-.5)*5, vy=Math.random()*4, vz=(Math.random()-.5)*5;
+    p.setAttribute('radius',(.05+Math.random()*.09).toFixed(3));
+    p.setAttribute('color',col); p.setAttribute('opacity','0.9');
+    p.setAttribute('transparent','true');
+    p.setAttribute('position',pos.x+' '+pos.y+' '+pos.z);
+    p.setAttribute('animation__m',
+      'property:position;to:'+(pos.x+vx)+' '+(pos.y+vy)+' '+(pos.z+vz)+';dur:450;easing:easeOutQuad');
+    p.setAttribute('animation__f','property:opacity;to:0;dur:450');
+    sc.appendChild(p);
+    setTimeout(()=>{if(p.parentNode)p.parentNode.removeChild(p)},490);
+  }
+}
+
+// ═══ СТАРТ / КОНЕЦ ═══
+function startGame(){
+  initAC();
+  resumeAC();
+  score=0; lives=3; timeLeft=30; wave=1; combo=0; active=true;
+  document.body.classList.add('immersive');
+  $id('overlay').style.display='none';
+  $id('xhair').style.display='block';
+  $id('hv-t').style.color='#ff8c00';
+  document.querySelectorAll('.spawned-item').forEach(e=>e.parentNode&&e.parentNode.removeChild(e));
+  updateHUD();
+
+  for(let i=0;i<4;i++) setTimeout(spawnGem,i*300);
+  setTimeout(spawnBomb,2200);
+
+  clearTimeout(spawnTmr); clearInterval(timerInt); clearInterval(waveInt);
+  const scheduleSpawn=()=>{
+    if(!active)return;
+    spawnGem();
+    if(Math.random()>.42)spawnBomb();
+    spawnTmr=setTimeout(scheduleSpawn,Math.max(600,1700-wave*110));
+  };
+  scheduleSpawn();
+
+  timerInt=setInterval(()=>{
+    if(!active)return;
+    timeLeft--;
+    if(timeLeft<=10)$id('hv-t').style.color='#ff3366';
+    updateHUD();
+    if(timeLeft<=0)endGame("TIME'S UP");
+  },1000);
+
+  waveInt=setInterval(()=>{
+    if(!active)return; wave++; sfxWave();
+    popup('WAVE '+wave+'!','#aaff00'); updateHUD();
+  },9000);
+
+  // Запрашиваем lock после скрытия оверлея, чтобы мышь сразу управляла обзором.
+  setTimeout(tryPointerLock,0);
+}
+
+function endGame(reason){
+  active=false;
+  clearTimeout(spawnTmr);clearInterval(timerInt);clearInterval(waveInt);
+  sfxEnd();
+  document.body.classList.remove('immersive');
+  if(document.exitPointerLock)document.exitPointerLock();
+  $id('xhair').style.display='none';
+  $id('ov-title').textContent='GAME OVER';
+  $id('ov-sub').textContent=reason;
+  const f=$id('ov-final'); f.textContent=score+' PTS'; f.style.display='block';
+  $id('ov-instr').style.display='none';
+  $id('ov-btn').textContent='↺ СНОВА';
+  $id('overlay').style.display='flex';
+}
+
+// ═══ ИНИЦИАЛИЗАЦИЯ СЦЕНЫ ═══
+document.addEventListener('DOMContentLoaded',()=>{
+  const sc=document.querySelector('a-scene');
+  sc.addEventListener('loaded',()=>{
+    makeTextures();
+    buildBgStars();
+    buildPillars();
+  });
+  window.addEventListener('click',shootAtCenter);
+  // Если пользователь нажал Esc, может снова кликнуть и вернуться в lock.
+  window.addEventListener('click',()=>{if(active)tryPointerLock()});
+});
+
+function buildBgStars(){
+  const c=$id('bg-stars');
+  for(let i=0;i<200;i++){
+    const r=110+Math.random()*90;
+    const th=Math.random()*Math.PI*2, ph=Math.random()*Math.PI;
+    const e=document.createElement('a-sphere');
+    e.setAttribute('radius',(0.04+Math.random()*.2).toFixed(3));
+    e.setAttribute('color',['#fff','#adf','#fec','#faf','#aff'][Math.floor(Math.random()*5)]);
+    e.setAttribute('position',
+      (r*Math.sin(ph)*Math.cos(th)).toFixed(2)+' '+
+      (r*Math.cos(ph)).toFixed(2)+' '+
+      (r*Math.sin(ph)*Math.sin(th)).toFixed(2));
+    e.setAttribute('shader','flat');
+    if(Math.random()>.65)
+      e.setAttribute('animation',
+        'property:scale;from:1 1 1;to:1.8 1.8 1.8;dur:'+(1200+Math.random()*2200|0)+';dir:alternate;loop:true');
+    c.appendChild(e);
+  }
+}
+
+function buildPillars(){
+  const c=$id('pillars');
+  [[-7,0,-7],[7,0,-7],[-7,0,7],[7,0,7],[0,0,-14],[13,0,0],[-13,0,0],[0,0,13]].forEach(([x,,z])=>{
+    const h=(2.5+Math.random()*5).toFixed(2);
+    // Parent: позиция
+    const par=document.createElement('a-entity');
+    par.setAttribute('position',x+' 0 '+z);
+    // Child: тело
+    const body=document.createElement('a-cylinder');
+    body.setAttribute('radius','0.38'); body.setAttribute('height',h);
+    body.setAttribute('segments-radial','8'); body.setAttribute('color','#060f1e');
+    body.setAttribute('metalness','0.95'); body.setAttribute('roughness','0.1');
+    body.setAttribute('position','0 '+(h/2)+' 0');
+    // Grandchild: кольцо
+    const ring=document.createElement('a-torus');
+    ring.setAttribute('radius','0.5'); ring.setAttribute('radius-tubular','0.04');
+    ring.setAttribute('color','#00e6ff');
+    ring.setAttribute('position','0 '+(parseFloat(h)/2+0.05).toFixed(2)+' 0');
+    ring.setAttribute('animation',
+      'property:rotation;from:0 0 0;to:0 360 0;dur:'+(2800+Math.random()*3000|0)+';loop:true;easing:linear');
+    body.appendChild(ring); par.appendChild(body); c.appendChild(par);
+  });
+}
+</script>
+</body>
+</html>
